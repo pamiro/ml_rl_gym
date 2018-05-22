@@ -96,12 +96,13 @@ class DLT(Singleton):
                     local_x >= world.shape[0] or local_y >= world.shape[1]:
                 reward = -1
                 goal = True
-
-            # collision
-            if (world[local_x, local_y] is not None) \
-                    and (agent.load is not world[local_x, local_y]):
-                reward = -1
-                goal = True
+            else:
+                # collision
+                if action in [Actions.MOVE_BACKWARD, Actions.MOVE_FORWARD]:
+                    if (world[local_x, local_y] is not None) \
+                            and (agent.load is not world[local_x, local_y]):
+                        reward = -1
+                        goal = True
 
             DLT().transaction(agent.wallet, DLT.GENESIS, costs)
         return reward, costs, goal
@@ -227,6 +228,19 @@ class DeliveryRobot(Agent):
 
     def set_orientation(self, orientation):
         self.orientation = orientation
+
+    def get_orientation(self):
+        return self.orientation
+
+    def get_orientation_angle(self):
+        if np.allclose(self.orientation, [1, 0]):
+            return 0
+        if np.allclose(self.orientation, [0, 1]):
+            return 90
+        if np.allclose(self.orientation, [-1, 0]):
+            return 180
+        if np.allclose(self.orientation, [0, -1]):
+            return 270
 
     def set_load(self, load):
         self.load = load
