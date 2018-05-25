@@ -88,9 +88,6 @@ class DLT(Singleton):
             local_x += change_x
             local_y += change_y
 
-            agent.set_position(position)
-            state['orientation'] = agent.orientation
-
             # do not cross borders of the world
             if local_x < 0 or local_y < 0 or \
                     local_x >= world.shape[0] or local_y >= world.shape[1]:
@@ -103,6 +100,10 @@ class DLT(Singleton):
                             and (agent.load is not world[local_x, local_y]):
                         reward = -1
                         goal = True
+
+            if not goal:
+                agent.set_position(position)
+                state['orientation'] = agent.orientation
 
             DLT().transaction(agent.wallet, DLT.GENESIS, costs)
         return reward, costs, goal
@@ -118,7 +119,6 @@ class DLT(Singleton):
         orientation = agent.orientation
 
         [next_x, next_y] = [local_x, local_y] + orientation;
-
         if action == Actions.PICK_UP_ASSET and (not state['loaded']):
             # reward for picking up asset
             # punish for attempt of picking up action in improper circumstances
@@ -133,32 +133,55 @@ class DLT(Singleton):
         elif action == Actions.DROP_OFF_ASSET and state['loaded']:
             # reward for picking up asset
             # punish for attempt of picking up action in improper circumstances
-            agent.set_load(None)
+            o = world[next_x, next_y]
+            if o is None:
+                agent.set_load(None)
+            else:
+                reward = -1
+                goal = True
 
         if state['loaded']:
-            if action == Actions.MOVE_FORWARD:
-                [next_x, next_y] = [next_x, next_y] + orientation;
-            elif action == Actions.MOVE_BACKWARD:
-                [next_x, next_y] = [next_x, next_y] - orientation;
+            if action in [Actions.TURN_LEFT, Actions.TURN_RIGHT]:
 
-            elif action == Actions.TURN_LEFT:
-                pass
-            elif action == Actions.TURN_RIGHT:
-                pass
+                # collision
+                if next_x < 0 or next_y < 0 or \
+                        next_x >= world.shape[0] or next_y >= world.shape[1]:
+                    reward = -1
+                    goal = True
+                elif (world[next_x, next_y] is not None) \
+                        and (world[next_x, next_y] is not agent):
+                    reward = -1
+                    goal = True
 
-            agent.load.set_position({'x': next_x, 'y': next_y})
+                if not goal:
+                    change = np.array([next_x, next_y]) - np.array([local_x, local_y])
+                    position = agent.get_position();
+                    position['x'] += change[0]
+                    position['y'] += change[1]
+                    agent.load.set_position(position)
 
-            if next_x < 0 | next_y < 0 | \
-                    next_x >= world.shape[0] | next_y >= world.shape[1]:
-                reward = -1
-                goal = True
+            if action in [Actions.MOVE_BACKWARD, Actions.MOVE_FORWARD]:
+                if action == Actions.MOVE_FORWARD:
+                    [next_x, next_y] = [next_x, next_y] + orientation;
+                elif action == Actions.MOVE_BACKWARD:
+                    [next_x, next_y] = [next_x, next_y] - orientation;
 
-            # collision
-            if (world[next_x, next_y] is not None) \
-                    and (world[next_x, next_y] is not agent):  # moving baclwards
-                print(world[next_x, next_y])
-                reward = -1
-                goal = True
+                if next_x < 0 or next_y < 0 or \
+                        next_x >= world.shape[0] or next_y >= world.shape[1]:
+                    reward = -1
+                    goal = True
+                    print
+
+                if not goal:
+                    o = world[next_x, next_y]
+                    if (o is not None) and (o is not agent):
+                        reward = -1
+                        goal = True
+
+                    position = agent.get_position()
+                    position['x'] += orientation[0]
+                    position['y'] += orientation[1]
+                    agent.load.set_position(position)
 
         DLT().transaction(agent.wallet, DLT.GENESIS, costs)
         return reward, costs, goal
@@ -253,7 +276,8 @@ class DeliveryRobot(Agent):
 
 
 class Environment:
-    def __init__(self, envsize=(10,10)):
+    def __init__(self, envsize=(10, 10), horizont=2):
+        self.horizont = horizont
         self.sizeX = envsize[0]
         self.sizeY = envsize[1]
         self.reset()
@@ -279,21 +303,21 @@ class Environment:
             plt.imshow(img, interpolation="nearest")
         return self.map
 
-    def localMap(self, agent, horizont=2, plot=False):
+    def localMap(self, agent, plot=False):
         self.renderEnv(False)
-
+        horizont = self.horizont
         left = agent.pos[0] - horizont - 1
         if left < 0:
             left = 0
         right = agent.pos[0] + horizont + 1
         if right >= self.sizeX:
-            right = self.sizeX - 1
+            right = self.sizeX
         top = agent.pos[1] - horizont - 1
         if top < 0:
             top = 0
         bottom = agent.pos[1] + horizont + 1
         if bottom >= self.sizeY:
-            bottom = self.sizeY - 1
+            bottom = self.sizeY
 
         map = self.map[left:right, top:bottom]
 
@@ -338,36 +362,35 @@ class Environment:
         new_state['world'] = self.localMap(agent)
         return new_state, total_reward, completed
 
-
-if __name__ == '__main__':
-    env = Environment((10,10))
-    # plt.ion()
-    # plt.show()
-
-    plt.subplot(211)
-    env.add(Obstacle([2, 2]))
-    env.add(Asset([1, 2], [10, 10]))
-
-    env.add(Asset([0, 0], [9, 9]))
-    robot = DeliveryRobot([1, 1])
-    env.add(robot)
-
-    # print(env.step(robot, Actions.TURN_RIGHT))
-    # print(env.step(robot, Actions.TURN_RIGHT))
-    # print(env.step(robot, Actions.TURN_RIGHT))
-    # print(env.step(robot, Actions.TURN_RIGHT))
-
-    # print(env.step(robot, Actions.MOVE_FORWARD))
-    print(env.step(robot, Actions.PICK_UP_ASSET))
-    print(env.step(robot, Actions.MOVE_FORWARD))
-    print(env.step(robot, Actions.MOVE_FORWARD))
-    print(env.step(robot, Actions.TURN_RIGHT))
-
-    env.renderEnv()
-
-    plt.subplot(212)
-    env.localMap(robot, plot=True)
-    # print(new_state)
-    # print(total_reward)
-    # print(completed)
-    plt.show()
+# if __name__ == '__main__':
+#     env = Environment((10,10))
+#     # plt.ion()
+#     # plt.show()
+#
+#     plt.subplot(211)
+#     env.add(Obstacle([2, 2]))
+#     env.add(Asset([1, 2], [10, 10]))
+#
+#     env.add(Asset([0, 0], [9, 9]))
+#     robot = DeliveryRobot([1, 1])
+#     env.add(robot)
+#
+#     # print(env.step(robot, Actions.TURN_RIGHT))
+#     # print(env.step(robot, Actions.TURN_RIGHT))
+#     # print(env.step(robot, Actions.TURN_RIGHT))
+#     # print(env.step(robot, Actions.TURN_RIGHT))
+#
+#     # print(env.step(robot, Actions.MOVE_FORWARD))
+#     print(env.step(robot, Actions.PICK_UP_ASSET))
+#     print(env.step(robot, Actions.MOVE_FORWARD))
+#     print(env.step(robot, Actions.MOVE_FORWARD))
+#     print(env.step(robot, Actions.TURN_RIGHT))
+#
+#     env.renderEnv()
+#
+#     plt.subplot(212)
+#     env.localMap(robot, plot=True)
+#     # print(new_state)
+#     # print(total_reward)
+#     # print(completed)
+#     plt.show()
