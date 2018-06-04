@@ -125,6 +125,7 @@ class DLT(Singleton):
             o = world[next_x, next_y]
             if isinstance(o, Asset):
                 agent.set_load(o)
+                o.picked_up = True
             else:
                 # punishment for not picking up assets
                 reward = -1
@@ -133,12 +134,14 @@ class DLT(Singleton):
         elif action == Actions.DROP_OFF_ASSET and state['loaded']:
             # reward for picking up asset
             # punish for attempt of picking up action in improper circumstances
-            o = world[next_x, next_y]
-            if o is None:
-                agent.set_load(None)
-            else:
-                reward = -1
+
+            if agent.load.get_position()['x'] == agent.load.destination[0] and \
+                    agent.load.get_position()['y'] == agent.load.destination[1]:
+                agent.load.delivered = True
+                reward = 1
                 goal = True
+            agent.load.picked_up = False
+            agent.set_load(None)
 
         if state['loaded']:
             if action in [Actions.TURN_LEFT, Actions.TURN_RIGHT]:
@@ -218,8 +221,7 @@ class Agent:
 
 class Obstacle(Agent):
     def __init__(self, coordinates):
-        super(Obstacle, self).__init__(coordinates, 1, [100, 100, 100], '')
-
+        super(Obstacle, self).__init__(coordinates, 1, [0.5, 0.5, 0.5], '')
 
 # charge for pass
 class Asset(Agent):
@@ -235,7 +237,9 @@ class Asset(Agent):
 
     def get_state(self):
         state = super().get_state()
-        state['dest'] = (self.load is not None)
+        state['picked'] = self.picked_up
+        state['destination'] = self.destination
+        state['delivered'] = self.delivered
         return state
 
 
@@ -246,7 +250,7 @@ class DeliveryRobot(Agent):
     def __init__(self, coordinates):
         self.load = None
         self.orientation = np.array([0, 1])
-        super(DeliveryRobot, self).__init__(coordinates, 1, [100, 0, 00], f'drobot {DeliveryRobot.id}')
+        super(DeliveryRobot, self).__init__(coordinates, 1, [100, 0, 00], f'drobot-{self.id}')
         DeliveryRobot.id = DeliveryRobot.id + 1
 
     def set_orientation(self, orientation):
@@ -265,13 +269,17 @@ class DeliveryRobot(Agent):
         if np.allclose(self.orientation, [0, -1]):
             return 270
 
-    def set_load(self, load):
+    def set_load(self, load: Asset):
         self.load = load
 
     def get_state(self):
         state = super().get_state()
         state['loaded'] = (self.load is not None)
+        state['position'] = self.get_position()
         state['orientation'] = self.orientation
+        state['destination'] = [-1, -1]
+        if self.load is not None:
+            state['destination'] = self.load.destination
         return state
 
 
@@ -280,7 +288,7 @@ class Environment:
         self.horizont = horizont
         self.sizeX = envsize[0]
         self.sizeY = envsize[1]
-        self.reset()
+        # self.reset()
         # plt.imshow(a,interpolation="nearest")
 
     def add(self, agent: Agent):
@@ -292,7 +300,7 @@ class Environment:
         state = self.renderEnv()
         return state
 
-    def renderEnv(self, plot=True):
+    def renderEnv(self, plot=False):
         self.map = np.array([None] * (self.sizeY * self.sizeX)).reshape((self.sizeX, self.sizeY))
         for agent in self.agents:
             self.map[agent.pos[0], agent.pos[1]] = agent;
@@ -337,10 +345,7 @@ class Environment:
         dlt = DLT()
 
         # compile state of the world around/near us
-        new_state = agent.get_state()
-        new_state['assets'] = [self.agents]  # show boxes around us
-        new_state['agents'] = [self.agents]  # show agents around
-        new_state['world'] = self.localMap(agent)
+        current_state = self.get_compound_state(agent)
 
         total_reward = 0.0
         cashflow = 0.0
@@ -348,49 +353,29 @@ class Environment:
 
         # fetch relevant contracts and update state
         for contract in dlt.locate_contracts(agent):
-            (reward, costs, goal) = contract(agent, new_state, proved_action)
+            (reward, costs, goal) = contract(agent, current_state, proved_action)
             cashflow += costs
             total_reward += reward
             completed = completed or goal
 
         total_reward += dlt.finanсial_objective(dlt.balance(agent.wallet), cashflow)
 
-        # compile state of the world around/near us
-        new_state = agent.get_state()
-        new_state['assets'] = [self.agents]  # show boxes around us
-        new_state['agents'] = [self.agents]  # show agents around
-        new_state['world'] = self.localMap(agent)
+        new_state = self.get_compound_state(agent)
         return new_state, total_reward, completed
 
-# if __name__ == '__main__':
-#     env = Environment((10,10))
-#     # plt.ion()
-#     # plt.show()
-#
-#     plt.subplot(211)
-#     env.add(Obstacle([2, 2]))
-#     env.add(Asset([1, 2], [10, 10]))
-#
-#     env.add(Asset([0, 0], [9, 9]))
-#     robot = DeliveryRobot([1, 1])
-#     env.add(robot)
-#
-#     # print(env.step(robot, Actions.TURN_RIGHT))
-#     # print(env.step(robot, Actions.TURN_RIGHT))
-#     # print(env.step(robot, Actions.TURN_RIGHT))
-#     # print(env.step(robot, Actions.TURN_RIGHT))
-#
-#     # print(env.step(robot, Actions.MOVE_FORWARD))
-#     print(env.step(robot, Actions.PICK_UP_ASSET))
-#     print(env.step(robot, Actions.MOVE_FORWARD))
-#     print(env.step(robot, Actions.MOVE_FORWARD))
-#     print(env.step(robot, Actions.TURN_RIGHT))
-#
-#     env.renderEnv()
-#
-#     plt.subplot(212)
-#     env.localMap(robot, plot=True)
-#     # print(new_state)
-#     # print(total_reward)
-#     # print(completed)
-#     plt.show()
+    def get_compound_state(self, agent):
+        # compile state of the world around/near us
+        new_state = agent.get_state()
+        new_state['id'] = agent.name
+        new_state['assets'] = \
+            map(lambda x: x.get_state(),
+                sorted(
+                filter(lambda x: isinstance(x, Asset) and x is not agent.load, self.agents),
+                key=lambda a: (a.pos[0] - agent.pos[0])**2 + (a.pos[1] - agent.pos[1])**2))  # show boxes around us
+        new_state['robots'] = \
+            [r.get_state() for r in sorted(
+                filter(lambda x: isinstance(x, DeliveryRobot) and x != agent, self.agents),
+                                     key=lambda a: (a.pos[0] - agent.pos[0])**2 + (a.pos[1] - agent.pos[1])**2)]
+        new_state['robots']
+        new_state['world'] = self.localMap(agent)
+        return new_state
