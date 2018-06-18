@@ -10,19 +10,25 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.widget import Widget
 import numpy as np
-from world import DeliveryRobot, Agent, Actions, Obstacle, Asset
+from world import DeliveryRobot, Agent, Actions, Obstacle, Asset, DLT
 from world import Environment
 
+BASIS_INCOME = 1.0
 
-##
-# why am i doing this?!
-# to visualize simulation ?!
-# я хочу проанализировать - смогу ли я достичь более высокоуровнего
-#  поведения за счёт введения экономических отношений между агентами
+A_KEY = ord('a')
+R_KEY = ord('r')
+D_KEY = ord('d')
+P_KEY = ord('p')
+I_KEY = ord('i')
+LEFT_KEY = 276
+RIGHT_KEY = 275
+BACKWARD_KEY = 274
+FORWARD_KEY = 273
 
 NASSETS = 3
 NOBSTACLES = 5
 NDELIVERY_AGENTS = 4
+
 
 class WidgetWrapper(Image):
     def __init__(self, *args, **kwargs):
@@ -62,7 +68,6 @@ class WidgetWrapper(Image):
             if self.agent.get_orientation_angle() == 180:
                 pass
             Rotate(angle=self.agent.get_orientation_angle(), origin=self.center)
-
 
         with self.canvas.after:
             PopMatrix()
@@ -180,10 +185,7 @@ class EnvironmentScreen(FloatLayout, Environment):
             self.remove_widget(self.children[0])
         super(EnvironmentScreen, self).reset()
 
-# Plan add help on keys
-# add better initialization
-# add continiouty
-# add game regime
+
 class RobotViewWidget(Widget):
     def __init__(self, **kwargs):
         super(RobotViewWidget, self).__init__(**kwargs)
@@ -196,7 +198,7 @@ class RobotViewWidget(Widget):
 
     def draw(self, map, horizon, robot):
         self.canvas.clear()
-        ms = (2 * (horizon + 1))
+        ms = (2 * (horizon + 1) + 1)
         cell_s = min(self.size) / ms
         offs_x = offs_y = 0
         # if map.shape[0] < min(self.size):
@@ -256,7 +258,7 @@ p - pickup a box
 d - drop a box
 r - reset
 a - activate
-d - deposit universal basis income
+i - deposit universal basis income
 """
 
     def build(self):
@@ -283,12 +285,12 @@ d - deposit universal basis income
     def key_action(self, key, scancode=None, codepoint=None, modifier=None, *args):
         print("got a key event: %s" % scancode)
 
-        if scancode == 114:
+        if scancode == R_KEY:
             self.environment.reset()
             self.set_status_text('reset')
 
         # activate
-        if scancode == 97:
+        if scancode == A_KEY:
             # warning add robot without collision
             self.add_agents(NDELIVERY_AGENTS, DeliveryRobot)
             self.add_agents(NOBSTACLES, Obstacle)
@@ -302,30 +304,32 @@ d - deposit universal basis income
             return
 
         robot = None
-
         for child in self.environment.children:
             if isinstance(child, WidgetWrapper) and child.selected:
                 robot = child.agent
                 break
 
         current_action = None
-        if scancode == 273:
+        if scancode == FORWARD_KEY:
             current_action = Actions.MOVE_FORWARD
 
-        if scancode == 274:
+        if scancode == BACKWARD_KEY:
             current_action = Actions.MOVE_BACKWARD
 
-        if scancode == 275:
+        if scancode == RIGHT_KEY:
             current_action = Actions.TURN_RIGHT
 
-        if scancode == 276:
+        if scancode == LEFT_KEY:
             current_action = Actions.TURN_LEFT
 
-        if scancode == 112:
+        if scancode == P_KEY:
             current_action = Actions.PICK_UP_ASSET
 
-        if scancode == 100:
+        if scancode == D_KEY:
             current_action = Actions.DROP_OFF_ASSET
+
+        if scancode == I_KEY:
+            self.deposit_basis_income()
 
         if current_action is not None and robot is not None:
             if (child.last_state is None) or \
@@ -351,6 +355,11 @@ d - deposit universal basis income
         if robot is not None:
             self.robot_local_world.draw(self.environment.localMap(robot),
                                         self.environment.horizont, robot)
+
+    def deposit_basis_income(self):
+        for agent in self.environment.agents:
+            if isinstance(agent, DeliveryRobot):
+                DLT().transaction(0, agent.wallet, BASIS_INCOME)
 
     def reestate_asset(self):
         for chld in self.environment.children:
@@ -395,8 +404,8 @@ d - deposit universal basis income
                                          'Destination: {destination}\n' \
                                          'Assets: {asum}' \
                                          'Other Robots: {rsum}'.format(**new_state,
-                                                               asum=asum,
-                                                               rsum=rsum)
+                                                                       asum=asum,
+                                                                       rsum=rsum)
 
     def on_touch_down(self, touch, *args):
         def fun(dt):

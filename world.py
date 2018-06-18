@@ -3,14 +3,18 @@ import matplotlib.pyplot as plt
 import uuid
 from enum import Enum
 
+# TODO Overspending punishment
+LOCATION_CHANGE_COST = 0.1
+
 
 class Singleton:
     _instance = None
 
     def __new__(cls, *args, **kwargs):
-        if not cls._instance:
+        if cls._instance is None:
             cls._instance = super(cls.__class__, cls) \
                 .__new__(cls, *args, **kwargs)
+            cls._instance.init()
         return cls._instance
 
 
@@ -31,7 +35,10 @@ ActionMoves = [Actions.MOVE_FORWARD, Actions.MOVE_BACKWARD,
 class DLT(Singleton):
     GENESIS = 0
 
-    def __init__(self):
+    # def __init__(self):
+    #     pass
+
+    def init(self):
         self.accounts = {'': 0}  # genesis
         self.transactions = []
         self.contracts = []
@@ -60,7 +67,7 @@ class DLT(Singleton):
     def location_contract(agent, state, action):
         """localisation contract, registering own location+orientation for collision avoidance"""
         reward = 0.0
-        costs = 0.1  # costs/rewards of registering own location
+        costs = LOCATION_CHANGE_COST  # costs/rewards of registering own location
         goal = False
 
         position = state['position']
@@ -173,7 +180,6 @@ class DLT(Singleton):
                         next_x >= world.shape[0] or next_y >= world.shape[1]:
                     reward = -1
                     goal = True
-                    print
 
                 if not goal:
                     o = world[next_x, next_y]
@@ -222,6 +228,7 @@ class Agent:
 class Obstacle(Agent):
     def __init__(self, coordinates):
         super(Obstacle, self).__init__(coordinates, 1, [0.5, 0.5, 0.5], '')
+
 
 # charge for pass
 class Asset(Agent):
@@ -303,7 +310,10 @@ class Environment:
     def renderEnv(self, plot=False):
         self.map = np.array([None] * (self.sizeY * self.sizeX)).reshape((self.sizeX, self.sizeY))
         for agent in self.agents:
-            self.map[agent.pos[0], agent.pos[1]] = agent;
+            if (agent.pos[0] >= 0) and (agent.pos[1] >= 0) and \
+                    (agent.pos[0] < self.map.shape[1]) and \
+                    (agent.pos[1] < self.map.shape[1]):
+                self.map[agent.pos[0], agent.pos[1]] = agent;
 
         if plot:
             img = [a.intensity if a is not None else [0.0, 0.0, 0.0] for a in self.map.flatten(order='F')]
@@ -315,19 +325,42 @@ class Environment:
         self.renderEnv(False)
         horizont = self.horizont
         left = agent.pos[0] - horizont - 1
+        oleft = 0
         if left < 0:
+            oleft = -left
             left = 0
-        right = agent.pos[0] + horizont + 1
+
+        right = agent.pos[0] + horizont + 2
+        oright = 0
         if right >= self.sizeX:
+            oright = right - self.sizeX
             right = self.sizeX
+
         top = agent.pos[1] - horizont - 1
+        otop = 0
         if top < 0:
+            otop = -top
             top = 0
-        bottom = agent.pos[1] + horizont + 1
+
+        bottom = agent.pos[1] + horizont + 2
+        obottom = 0
         if bottom >= self.sizeY:
+            obottom = bottom - self.sizeY
             bottom = self.sizeY
 
         map = self.map[left:right, top:bottom]
+        if oleft > 0 or oright > 0 or obottom > 0 or otop > 0:
+            newmap = np.zeros(((2 * (horizont + 1) + 1), (2 * (horizont + 1) + 1)), dtype=map.dtype)
+            newmap.fill(Obstacle([0, 0]))
+            oright = -oright
+            if oright == 0:
+                oright = None
+            obottom = -obottom
+            if obottom == 0:
+                obottom = None
+            newmap[oleft:oright, otop:obottom] = map
+            # print(oleft, oright, otop, obottom)
+            map = newmap
 
         if plot:
             img = [a.intensity if a is not None else [0.0, 0.0, 0.0] for a in map.flatten(order='F')]
@@ -370,12 +403,13 @@ class Environment:
         new_state['assets'] = \
             map(lambda x: x.get_state(),
                 sorted(
-                filter(lambda x: isinstance(x, Asset) and x is not agent.load, self.agents),
-                key=lambda a: (a.pos[0] - agent.pos[0])**2 + (a.pos[1] - agent.pos[1])**2))  # show boxes around us
+                    filter(lambda x: isinstance(x, Asset) and x is not agent.load, self.agents),
+                    key=lambda a: (a.pos[0] - agent.pos[0]) ** 2 + (
+                            a.pos[1] - agent.pos[1]) ** 2))  # show boxes around us
         new_state['robots'] = \
             [r.get_state() for r in sorted(
                 filter(lambda x: isinstance(x, DeliveryRobot) and x != agent, self.agents),
-                                     key=lambda a: (a.pos[0] - agent.pos[0])**2 + (a.pos[1] - agent.pos[1])**2)]
+                key=lambda a: (a.pos[0] - agent.pos[0]) ** 2 + (a.pos[1] - agent.pos[1]) ** 2)]
         new_state['robots']
         new_state['world'] = self.localMap(agent)
         return new_state
