@@ -1,11 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import uuid
-from enum import Enum
+from enum import Enum, IntEnum
 
 # TODO Overspending punishment
 LOCATION_CHANGE_COST = 0.1
-
 
 class Singleton:
     _instance = None
@@ -18,7 +17,7 @@ class Singleton:
         return cls._instance
 
 
-class Actions(Enum):
+class Actions(IntEnum):
     NONE = 0
     MOVE_FORWARD = 1
     MOVE_BACKWARD = 2
@@ -110,7 +109,7 @@ class DLT(Singleton):
 
             if not goal:
                 agent.set_position(position)
-                state['orientation'] = agent.orientation
+                #state['orientation'] = agent.orientation
 
             DLT().transaction(agent.wallet, DLT.GENESIS, costs)
         return reward, costs, goal
@@ -120,6 +119,14 @@ class DLT(Singleton):
         reward = 0.0
         costs = 0.0  # costs/rewards picking/moving/dropping assets
         goal = False
+
+        def reward_for_moving_closer_to_dest(old_pos, new_pos, dest):
+            rew = 0.0
+            dist_old = (old_pos['x'] - dest[0]) ** 2 + (old_pos['y'] - dest[1]) ** 2
+            dist_new = (new_pos['x'] - dest[0]) ** 2 + (new_pos['y'] - dest[1]) ** 2
+            if dist_old > dist_new:
+                rew = 1.0
+            return rew
 
         world = state['world']
         [[local_x, local_y]] = np.argwhere(world == agent)
@@ -133,22 +140,28 @@ class DLT(Singleton):
             if isinstance(o, Asset):
                 agent.set_load(o)
                 o.picked_up = True
+                reward = 1
             else:
                 # punishment for not picking up assets
                 reward = -1
                 goal = True
 
-        elif action == Actions.DROP_OFF_ASSET and state['loaded']:
-            # reward for picking up asset
-            # punish for attempt of picking up action in improper circumstances
+        elif action == Actions.DROP_OFF_ASSET:
+            if state['loaded']:
+                # reward for picking up asset
+                # punish for attempt of picking up action in improper circumstances
 
-            if agent.load.get_position()['x'] == agent.load.destination[0] and \
-                    agent.load.get_position()['y'] == agent.load.destination[1]:
-                agent.load.delivered = True
-                reward = 1
+                if agent.load.get_position()['x'] == agent.load.destination[0] and \
+                        agent.load.get_position()['y'] == agent.load.destination[1]:
+                    agent.load.delivered = True
+                    reward = 1
+                    goal = True
+                agent.load.picked_up = False
+                agent.set_load(None)
+            else:
+                # punishment for not picking up assets
+                reward = -1
                 goal = True
-            agent.load.picked_up = False
-            agent.set_load(None)
 
         if state['loaded']:
             if action in [Actions.TURN_LEFT, Actions.TURN_RIGHT]:
@@ -168,6 +181,7 @@ class DLT(Singleton):
                     position = agent.get_position();
                     position['x'] += change[0]
                     position['y'] += change[1]
+                    reward += reward_for_moving_closer_to_dest(agent.get_position(), position, agent.load.destination)
                     agent.load.set_position(position)
 
             if action in [Actions.MOVE_BACKWARD, Actions.MOVE_FORWARD]:
@@ -190,7 +204,21 @@ class DLT(Singleton):
                     position = agent.get_position()
                     position['x'] += orientation[0]
                     position['y'] += orientation[1]
+                    reward += reward_for_moving_closer_to_dest(agent.get_position(), position, agent.load.destination)
                     agent.load.set_position(position)
+
+        elif action in [Actions.MOVE_BACKWARD, Actions.MOVE_FORWARD]:
+            # reward for moving closer to delivery
+            old_pos = state['position']
+            new_pos = agent.get_position()
+            assets = state['assets']
+            for asset in assets:
+                apos = asset['position']
+                dist_old = (old_pos['x'] -  apos['x'])**2 + (old_pos['y'] - apos['y'])**2
+                dist_new = (new_pos['x'] - apos['x'])**2 + (new_pos['y'] - apos['y'])**2
+                if dist_old > dist_new:
+                    reward = 1.0
+                    break
 
         DLT().transaction(agent.wallet, DLT.GENESIS, costs)
         return reward, costs, goal
@@ -257,6 +285,12 @@ class DeliveryRobot(Agent):
     def __init__(self, coordinates):
         self.load = None
         self.orientation = np.array([0, 1])
+
+        for i in range(0,np.random.randint(10)):
+            self.set_orientation(np.asarray(
+                np.matrix([[0, -1], [1, 0]]) * np.matrix(self.orientation).T).T
+                                  .flatten())
+
         super(DeliveryRobot, self).__init__(coordinates, 1, [100, 0, 00], f'drobot-{self.id}')
         DeliveryRobot.id = DeliveryRobot.id + 1
 
@@ -291,12 +325,15 @@ class DeliveryRobot(Agent):
 
 
 class Environment:
-    def __init__(self, envsize=(10, 10), horizont=2):
-        self.horizont = horizont
+    def __init__(self, envsize=(10, 10), horizon=2):
+        self.horizon = horizon
         self.sizeX = envsize[0]
         self.sizeY = envsize[1]
         # self.reset()
         # plt.imshow(a,interpolation="nearest")
+
+    def local_map_size(self):
+        return (self.horizon + 1) * 2 + 1
 
     def add(self, agent: Agent):
         self.agents.append(agent)
@@ -323,7 +360,7 @@ class Environment:
 
     def localMap(self, agent, plot=False):
         self.renderEnv(False)
-        horizont = self.horizont
+        horizont = self.horizon
         left = agent.pos[0] - horizont - 1
         oleft = 0
         if left < 0:
@@ -410,6 +447,5 @@ class Environment:
             [r.get_state() for r in sorted(
                 filter(lambda x: isinstance(x, DeliveryRobot) and x != agent, self.agents),
                 key=lambda a: (a.pos[0] - agent.pos[0]) ** 2 + (a.pos[1] - agent.pos[1]) ** 2)]
-        new_state['robots']
         new_state['world'] = self.localMap(agent)
         return new_state

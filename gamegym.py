@@ -1,3 +1,7 @@
+import gc
+from collections import deque
+from functools import partial
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -10,8 +14,12 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.image import Image
 from kivy.uix.widget import Widget
 import numpy as np
+
 from world import DeliveryRobot, Agent, Actions, Obstacle, Asset, DLT
 from world import Environment
+import learning
+import tensorflow as tf
+import matplotlib.pyplot as plt
 
 BASIS_INCOME = 1.0
 
@@ -20,6 +28,10 @@ R_KEY = ord('r')
 D_KEY = ord('d')
 P_KEY = ord('p')
 I_KEY = ord('i')
+S_KEY = ord('s')
+Q_KEY = ord('q')
+T_KEY = ord('t')
+
 LEFT_KEY = 276
 RIGHT_KEY = 275
 BACKWARD_KEY = 274
@@ -27,7 +39,7 @@ FORWARD_KEY = 273
 
 NASSETS = 3
 NOBSTACLES = 5
-NDELIVERY_AGENTS = 4
+NDELIVERY_AGENTS = 2
 
 
 class WidgetWrapper(Image):
@@ -220,6 +232,62 @@ class RobotViewWidget(Widget):
                                   size=(cell_s, cell_s))
 
 
+class Visualization:
+    # reward
+    # loss
+    # actions distributions
+
+    MAX_M = 100
+
+    def __init__(self):
+        self.rq_cnt = 0
+        self.rq = deque(np.zeros(self.MAX_M), maxlen=self.MAX_M)
+        self.tq = deque(np.zeros(self.MAX_M), maxlen=self.MAX_M)
+        self.hist = {}
+        self.build()
+
+    def add_reward(self, r):
+        self.rq.append(r)
+        self.rq_cnt += 1
+
+    def add_train_loss(self, l):
+        self.tq.append(l)
+
+    def add_action(self, a):
+        if not int(a) in self.hist.keys():
+            self.hist[int(a)] = 1
+        else:
+            self.hist[int(a)] += 1
+
+    def build(self):
+        plt.ion()
+        self.fig = plt.figure()
+        self.ax1 = self.fig.add_subplot(311)
+        self.ax2 = self.fig.add_subplot(312)
+        self.ax3 = self.fig.add_subplot(313)
+
+        self.tq_line, = self.ax2.plot(self.tq)
+        # self.ax1.title = 'rewards'
+        # self.ax2.title = 'loss training'
+        plt.subplots_adjust(hspace=1.0)
+
+    def update(self):
+        self.ax1.clear()
+        self.ax3.set_title('reward')
+        self.ax1.plot(np.arange(self.rq_cnt-100, self.rq_cnt), self.rq)
+
+        self.ax3.set_title('loss train.')
+        self.tq_line.set_ydata(self.tq)
+        self.ax2.relim()
+        self.ax2.autoscale_view()
+
+        self.ax3.clear()
+        self.ax3.set_title('actions')
+        self.ax3.bar(self.hist.keys(), self.hist.values())
+
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
 class GameGymApp(App):
     environment = EnvironmentScreen(envsize=[10, 10]);
     robot_local_world = RobotViewWidget(size_hint=(1, 1))
@@ -259,6 +327,8 @@ d - drop a box
 r - reset
 a - activate
 i - deposit universal basis income
+s - simulation/training start
+q - simulation/training abort
 """
 
     def build(self):
@@ -285,20 +355,23 @@ i - deposit universal basis income
     def key_action(self, key, scancode=None, codepoint=None, modifier=None, *args):
         print("got a key event: %s" % scancode)
 
+        if scancode == S_KEY:
+            self.start_sim()
+
+        if scancode == Q_KEY:
+            if self.sim is not None:
+                self.sim.cancel()
+
+        if scancode == T_KEY:
+            pass
+
         if scancode == R_KEY:
             self.environment.reset()
             self.set_status_text('reset')
 
         # activate
         if scancode == A_KEY:
-            # warning add robot without collision
-            self.add_agents(NDELIVERY_AGENTS, DeliveryRobot)
-            self.add_agents(NOBSTACLES, Obstacle)
-
-            cnt = 0
-            while cnt < NASSETS:
-                if self.add_asset():
-                    cnt += 1
+            self.activate_random()
 
         if len(self.environment.children) == 0:
             return
@@ -354,7 +427,16 @@ i - deposit universal basis income
 
         if robot is not None:
             self.robot_local_world.draw(self.environment.localMap(robot),
-                                        self.environment.horizont, robot)
+                                        self.environment.horizon, robot)
+
+    def activate_random(self):
+        # warning add robot without collision
+        self.add_agents(NDELIVERY_AGENTS, DeliveryRobot)
+        self.add_agents(NOBSTACLES, Obstacle)
+        cnt = 0
+        while cnt < NASSETS:
+            if self.add_asset():
+                cnt += 1
 
     def deposit_basis_income(self):
         for agent in self.environment.agents:
@@ -401,6 +483,7 @@ i - deposit universal basis income
         self.left_panel.ids.state.text = 'ID: {id}\n' \
                                          'Loaded : {loaded}\n' \
                                          'Balance: {balance}\n' \
+                                         'Position: {position}\n' \
                                          'Destination: {destination}\n' \
                                          'Assets: {asum}' \
                                          'Other Robots: {rsum}'.format(**new_state,
@@ -414,11 +497,149 @@ i - deposit universal basis income
                     robot = child.agent
                     self.display_agent_state(self.environment.get_compound_state(robot))
                     self.robot_local_world.draw(self.environment.localMap(robot),
-                                                self.environment.horizont,
+                                                self.environment.horizon,
                                                 robot)
 
         Clock.schedule_once(fun, 0.1)
 
+    def encode_state(self, o, wstate):
+        state = {}
+
+        def _maprep(e):
+            if e == o:
+                return 1.0;
+            if isinstance(e, Obstacle):
+                return 1.0
+            if isinstance(e, DeliveryRobot):
+                return 1.0
+            if isinstance(e, Asset):
+                return -1
+            return 0.0
+
+        maprepr = np.vectorize(_maprep)
+        hsize = self.environment.local_map_size()
+        state['map'] = maprepr(np.array(wstate['world'])).reshape((1, hsize, hsize))
+
+        mspace = np.array([self.environment.sizeX, self.environment.sizeY])
+
+        def norm_coords(coord):
+            return coord / mspace
+
+        def to_list(i):
+            return np.array([i['x'], i['y']]) / mspace
+
+        state['coord'] = to_list(o.get_position()).reshape((1, 2))
+        state['orient'] = o.get_orientation().reshape((1, 2))
+
+        dest = wstate['destination']
+        if wstate['loaded']:
+            dest = norm_coords(dest)
+        state['dest'] = np.array(dest).reshape((1, 2))
+        state['loaded'] = np.array([1 if wstate['loaded'] else 0]).reshape((1, 1))
+
+        state['assets'] = np.zeros((1, 3, 2, 2));
+        idx = 0
+        for ass in wstate['assets']:
+            state['assets'][0, idx, :, :] = np.array([to_list(ass['position']),
+                                            norm_coords(ass['destination'])])
+            idx += 1
+
+        return state
+
+    def sim_reset(self):
+
+        self.environment.reset()
+        self.set_status_text('reset')
+        self.activate_random()
+
+        for w in self.environment.children:
+            if isinstance(w.agent, DeliveryRobot):
+                w.q_state = learning.DoubleQN.get_new_rnn_state()
+                w.experience = learning.ExperienceBuffer()
+        gc.collect()
+
+    def start_sim(self):
+        path = 'gamegym-train'
+        tf.reset_default_graph()
+        self.q = learning.DoubleQN(self.environment.horizon)
+
+        init = tf.global_variables_initializer()
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        sess = tf.Session(config=config)
+        sess.run(init)
+
+        totalExperience = learning.ExperienceBuffer()
+
+        self.vis = Visualization()
+        self.sim_reset()
+
+        saver = tf.train.Saver(max_to_keep=5)
+        ckpt = tf.train.get_checkpoint_state(path)
+        if ckpt is not None:
+           print("Loading model")
+           saver.restore(sess, ckpt.model_checkpoint_path)
+        else:
+           sess.run(init)
+
+        def simulation_routine(count, dt):
+            completed = False
+            for w in self.environment.children:
+                if isinstance(w.agent, DeliveryRobot):
+                    self.q.set_rnn_state(w.q_state)
+                    enc_state = self.encode_state(w.agent,
+                                                  self.environment.get_compound_state(
+                                                      w.agent))
+                    action, new_rnn_state, _ = self.q.predict(sess, enc_state, epsilon=0.05)
+                    w.q_state = new_rnn_state
+
+                    new_state, total_reward, completed = self.environment.step(w.agent, action)
+
+                    w.experience.add_to_episode([
+                        enc_state['map'].reshape((7,7)),  # BATCH_INDEX_MAP
+                        enc_state['coord'],  # BATCH_INDEX_COORD
+                        enc_state['orient'],  # BATCH_INDEX_ORIEN
+                        enc_state['dest'],  # BATCH_INDEX_DEST
+                        enc_state['loaded'],  # BATCH_INDEX_LOAD
+                        np.array([action]),  # BATCH_INDEX_ACTION
+                        np.array([1 if completed else 0]),  # BATCH_INDEX_SUCCESS_FLAG
+                        np.array([total_reward])  # BATCH_INDEX_REWARD
+                    ], new_episode=(count == 0))
+
+                    self.vis.add_action(action)
+                    self.vis.add_reward(total_reward)
+
+                    if completed:
+                        # print(new_state, total_reward, completed)
+                        break
+
+                    self.display_agent_state(new_state)
+                    self.robot_local_world.draw(new_state['world'],
+                                                self.environment.horizon,
+                                                w.agent)
+                    w.on_update()
+
+                    if count % 100 == 0:
+                        self.vis.update()
+
+            if completed:
+                totalExperience.add(w.experience.buffer[-1])
+                self.sim_reset()
+                count = -1
+
+                if (totalExperience.cnt > 0) and (totalExperience.cnt % 100 == 0):
+                    loss = self.q.train(sess, totalExperience, 100, 10, y=0.1)
+                    self.vis.add_train_loss(loss)
+                    saver.save(sess, path + '/model-' + str(1) + '.cptk')
+
+            self.sim = Clock.schedule_once(partial(simulation_routine, count + 1), 0)
+
+        simulation_routine(0, 0)
+
 
 if __name__ == '__main__':
+    tf.reset_default_graph()
+    # config = tf.ConfigProto()
+    # config.gpu_options.allow_growth = True
+
     GameGymApp().run()
