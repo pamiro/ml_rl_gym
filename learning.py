@@ -5,9 +5,6 @@ import tensorflow.contrib.slim as slim
 
 from world import Actions
 
-CONV_LAYER1 = (6 ** 2)
-CONV_LAYER2 = (5 ** 2)
-
 BATCH_INDEX_MAP = 0
 BATCH_INDEX_COORD = 1
 BATCH_INDEX_ORIENT = 2
@@ -27,6 +24,9 @@ class ExperienceBuffer:
     def add_to_episode(self, measurement, new_episode=False):
         if len(self.buffer) == 0 or new_episode:
             self.buffer.append([])
+        # TODO max length of episode?!
+        # if len(self.buffer[-1]) + 1 >= self.buffer_size:
+        #     self.buffer[-1][0:(1 + len(self.buffer)) - self.buffer_size] = []
         self.buffer[-1].append(measurement)
 
     def add(self, episode):
@@ -56,11 +56,14 @@ class ExperienceBuffer:
 class DoubleQN:
     """Implementation of double Q-Network
     """
-    RNN_HIDDEN_LAYER = 6
     ACTION_SPACE = max(map(int, Actions))+1
-    DENSE_LAYER1 = 10
-    DENSE_LAYER2 = 10
-    DENSE_LAYER3 = 10
+
+    CONV_LAYER1 = (6 ** 2)
+    CONV_LAYER2 = (5 ** 2)
+    RNN_HIDDEN_LAYER = 3
+    DENSE_LAYER1 = 100
+    DENSE_LAYER2 = 100
+    DENSE_LAYER3 = 20
 
     @staticmethod
     def random_sampler():
@@ -83,23 +86,23 @@ class DoubleQN:
             self.trace_length = tf.placeholder(dtype=tf.int32, shape=[], name="trace_length")
 
             self.combine_state_action()
-            self.conv1 = slim.convolution2d(inputs=self.map, num_outputs=CONV_LAYER1, kernel_size=2, stride=1,
+            self.conv1 = slim.convolution2d(inputs=self.map, num_outputs=DoubleQN.CONV_LAYER1, kernel_size=2, stride=1,
                                             padding='VALID', biases_initializer=None)
-            self.conv2 = slim.convolution2d(inputs=self.conv1, num_outputs=CONV_LAYER2, kernel_size=2, stride=1,
+            self.conv2 = slim.convolution2d(inputs=self.conv1, num_outputs=DoubleQN.CONV_LAYER2, kernel_size=2, stride=1,
                                             padding='VALID', biases_initializer=None)
-            self.combined_input2 = tf.concat(
+            self.combined_input = tf.concat(
                 [tf.reshape(self.conv2, shape=[-1,self.conv2.shape[1]*self.conv2.shape[2]]),
                  self.coord,
                  self.orient,
                  self.dest,
                  self.loaded], axis=1)
-            self.combined_input2 = tf.reshape(self.combined_input2,
-                                             shape=[-1, self.trace_length, self.combined_input2.shape[1]])
+            self.combined_input = tf.reshape(self.combined_input,
+                                             shape=[-1, self.trace_length, self.combined_input.shape[1]])
 
             rnn_cell = tf.contrib.rnn.BasicLSTMCell(DoubleQN.RNN_HIDDEN_LAYER)
             self.rnn_state_in = rnn_cell.zero_state(self.batch_size, dtype=tf.float32)
             self.rnn, self.rnn_state = tf.nn.dynamic_rnn(
-                inputs=self.combined_input2,
+                inputs=self.combined_input,
                 cell=rnn_cell,
                 dtype=tf.float32, initial_state=self.rnn_state_in)
 

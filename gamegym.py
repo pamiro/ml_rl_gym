@@ -232,7 +232,7 @@ class RobotViewWidget(Widget):
                                   size=(cell_s, cell_s))
 
 
-class Visualization:
+class Stats:
     # reward
     # loss
     # actions distributions
@@ -273,10 +273,10 @@ class Visualization:
 
     def update(self):
         self.ax1.clear()
-        self.ax3.set_title('reward')
+        self.ax1.set_title('reward')
         self.ax1.plot(np.arange(self.rq_cnt-100, self.rq_cnt), self.rq)
 
-        self.ax3.set_title('loss train.')
+        self.ax2.set_title('loss train.')
         self.tq_line.set_ydata(self.tq)
         self.ax2.relim()
         self.ax2.autoscale_view()
@@ -571,7 +571,7 @@ q - simulation/training abort
 
         totalExperience = learning.ExperienceBuffer()
 
-        self.vis = Visualization()
+        self.vis = Stats()
         self.sim_reset()
 
         saver = tf.train.Saver(max_to_keep=5)
